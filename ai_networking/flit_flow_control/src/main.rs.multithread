@@ -1,0 +1,96 @@
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
+use crossbeam::channel::{bounded, Receiver, Sender};
+
+/// Maximum buffer size at the receiver
+const BUFFER_SIZE: usize = 4;
+const NUM_SENDERS: usize = 2;
+const NUM_RECEIVERS: usize = 2;
+
+/// Struct to represent a FLIT (Flow Control Unit)
+#[derive(Debug, Clone)]
+struct Flit {
+    id: u32,
+}
+
+/// Receiver that processes FLITs and returns credits
+fn receiver(flit_rx: Receiver<Flit>, credit_tx: Sender<u32>, id: usize) {
+    let mut buffer: Vec<Flit> = Vec::new();
+
+    while let Ok(flit) = flit_rx.recv() {
+        println!("📥 Receiver {}: Processing FLIT {:?}", id, flit);
+        buffer.push(flit);
+
+        // Simulate processing delay
+        thread::sleep(Duration::from_millis(500));
+
+        // Remove a FLIT from the buffer (processed)
+        if let Some(removed_flit) = buffer.pop() {
+            println!("✅ Receiver {}: FLIT {:?} processed, returning credit.", id, removed_flit);
+            credit_tx.send(1).unwrap(); // Return a credit
+        }
+    }
+}
+
+/// Sender that transmits FLITs based on available credits
+fn sender(flit_tx: Sender<Flit>, credit_rx: Receiver<u32>, credits: Arc<Mutex<usize>>, id: usize) {
+    let mut flit_id = 1;
+
+    loop {
+        {
+            let mut credits_lock = credits.lock().unwrap();
+            if *credits_lock > 0 {
+                let flit = Flit { id: flit_id };
+                flit_id += 1;
+                println!("🚀 Sender {}: Sending FLIT {:?}", id, flit);
+                flit_tx.send(flit).unwrap();
+                *credits_lock -= 1; // Consume a credit
+            } else {
+                println!("⏸️ Sender {}: Waiting for credits...", id);
+            }
+        }
+
+        // Receive credits when available
+        if let Ok(credit) = credit_rx.try_recv() {
+            let mut credits_lock = credits.lock().unwrap();
+            *credits_lock += credit as usize;
+            println!("🔄 Sender {}: Received {} credit(s), total available: {}", id, credit, *credits_lock);
+        }
+
+        // Simulate network transmission delay
+        thread::sleep(Duration::from_millis(200));
+    }
+}
+
+fn main() {
+    // Create channels for FLIT transmission and credit return
+    let (flit_tx, flit_rx) = bounded::<Flit>(BUFFER_SIZE);
+    let (credit_tx, credit_rx) = bounded::<u32>(BUFFER_SIZE);
+
+    // Shared credit counter
+    let shared_credits = Arc::new(Mutex::new(BUFFER_SIZE));
+
+    let mut threads = vec![];
+
+    // Spawn multiple sender threads
+    for i in 0..NUM_SENDERS {
+        let flit_tx = flit_tx.clone();
+        let credit_rx = credit_rx.clone();
+        let credits = Arc::clone(&shared_credits);
+        threads.push(thread::spawn(move || sender(flit_tx, credit_rx, credits, i)));
+    }
+
+    // Spawn multiple receiver threads
+    for i in 0..NUM_RECEIVERS {
+        let flit_rx = flit_rx.clone();
+        let credit_tx = credit_tx.clone();
+        threads.push(thread::spawn(move || receiver(flit_rx, credit_tx, i)));
+    }
+
+    // Wait for all threads (infinite loop in this case)
+    for thread in threads {
+        thread.join().unwrap();
+    }
+}
+

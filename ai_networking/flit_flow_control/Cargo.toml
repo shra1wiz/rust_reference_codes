@@ -1,0 +1,8 @@
+[package]
+name = "flit_flow_control"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+crossbeam = "0.8"
+
